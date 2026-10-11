@@ -18,6 +18,8 @@ sudo apt install iptables wireguard
 sudo dnf install iptables wireguard-tools
 ```
 
+The client does not strictly need the WireGuard kernel module. When the kernel has no WireGuard support (for example, in Modal VM sandboxes), `vprox connect` falls back to the embedded userspace implementation (wireguard-go) on a TUN interface of the same name. That requires `/dev/net/tun`, and the startup log says which implementation is in use. The userspace interface serves the standard UAPI socket under `/var/run/wireguard`, so `wg show` works with it. The server always uses kernel WireGuard.
+
 Also, you need to set some kernel settings with Sysctl. Enable IPv4 forwarding, and make sure that [`rp_filter`](https://sysctl-explorer.net/net/ipv4/rp_filter/) is set to 2, or masqueraded packets may be filtered out. You can edit your OS configuration file to set this persistently, or set it once below.
 
 ```bash

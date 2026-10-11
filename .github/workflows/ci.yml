@@ -51,6 +51,11 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -race -count=1 ./...
+      # Tests that create network interfaces skip themselves unless root.
+      - name: Root-only tests (TUN, userspace WireGuard)
+        run: |
+          go test -c -race -o lib.test ./lib
+          sudo ./lib.test -test.count=1 -test.v
 
   build:
     name: Linux build (${{ matrix.goarch }})
