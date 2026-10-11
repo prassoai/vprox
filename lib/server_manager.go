@@ -2,6 +2,7 @@ package lib
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net/netip"
@@ -25,6 +26,7 @@ type ServerManager struct {
 	ipt           *iptables.IPTables
 	key           wgtypes.Key
 	auth          *Authenticator
+	tlsConfig     *tls.Config
 	ctx           context.Context
 	waitGroup     *sync.WaitGroup
 	wgBlock       netip.Prefix
@@ -41,7 +43,7 @@ type ServerManager struct {
 }
 
 // NewServerManager creates a new server manager
-func NewServerManager(wgBlock netip.Prefix, wgBlockPerIp uint, ctx context.Context, key wgtypes.Key, auth *Authenticator, takeover bool) (*ServerManager, error) {
+func NewServerManager(wgBlock netip.Prefix, wgBlockPerIp uint, ctx context.Context, key wgtypes.Key, auth *Authenticator, tlsConfig *tls.Config, takeover bool) (*ServerManager, error) {
 	// Make a shared WireGuard client.
 	wgClient, err := wgctrl.New()
 	if err != nil {
@@ -65,6 +67,7 @@ func NewServerManager(wgBlock netip.Prefix, wgBlockPerIp uint, ctx context.Conte
 	sm.ipt = ipt
 	sm.key = key
 	sm.auth = auth
+	sm.tlsConfig = tlsConfig
 	sm.ctx = ctx
 	sm.waitGroup = new(sync.WaitGroup)
 	sm.wgBlock = wgBlock.Masked()
@@ -111,15 +114,16 @@ func (sm *ServerManager) Start(ip netip.Addr) error {
 	wgCidr := netip.PrefixFrom(subnetStart.Next(), int(sm.wgBlockPerIp))
 
 	srv := &Server{
-		Key:      sm.key,
-		BindAddr: ip,
-		Auth:     sm.auth,
-		Index:    i,
-		Ipt:      sm.ipt,
-		WgClient: sm.wgClient,
-		WgCidr:   wgCidr,
-		Ctx:      subctx,
-		takeover: sm.takeover,
+		Key:       sm.key,
+		BindAddr:  ip,
+		Auth:      sm.auth,
+		TLSConfig: sm.tlsConfig,
+		Index:     i,
+		Ipt:       sm.ipt,
+		WgClient:  sm.wgClient,
+		WgCidr:    wgCidr,
+		Ctx:       subctx,
+		takeover:  sm.takeover,
 	}
 	if err := srv.InitState(); err != nil {
 		_ = cancel // cancel should be discarded

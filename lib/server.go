@@ -3,7 +3,6 @@ package lib
 import (
 	"context"
 	"crypto/tls"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -64,6 +63,9 @@ type Server struct {
 
 	// Auth is the authenticator used to verify incoming requests.
 	Auth *Authenticator
+
+	// TLSConfig authenticates the server to clients on the control connection.
+	TLSConfig *tls.Config
 
 	// Index is a unique server index for firewall marks and other uses. It starts at 0.
 	Index uint16
@@ -751,16 +753,9 @@ func (srv *Server) ListenForHttps() error {
 	mux.HandleFunc("/relinquish", srv.relinquishHandler)
 	mux.HandleFunc("/version", srv.versionHandler)
 
-	cert, err := loadServerTls()
-	if err != nil {
-		return err
-	}
-
 	httpServer := &http.Server{
-		Handler: mux,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-		},
+		Handler:   mux,
+		TLSConfig: srv.TLSConfig,
 	}
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("%v:443", srv.BindAddr))
@@ -786,19 +781,4 @@ func (srv *Server) ListenForHttps() error {
 	case err = <-errCh:
 		return err
 	}
-}
-
-//go:embed certs/cert.pem certs/key.pem
-var defaultCerts embed.FS
-
-// loadServerTls loads the server's TLS certificate for control connections.
-func loadServerTls() (tls.Certificate, error) {
-	certData, _ := defaultCerts.ReadFile("certs/cert.pem")
-	keyData, _ := defaultCerts.ReadFile("certs/key.pem")
-
-	cert, err := tls.X509KeyPair(certData, keyData)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("failed to load server certificate: %v", err)
-	}
-	return cert, nil
 }

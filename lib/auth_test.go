@@ -443,17 +443,6 @@ func TestOIDCAuth_NoEnvironmentCheck_WhenNotConfigured(t *testing.T) {
 	assert.NoError(t, auth.Authenticate(req))
 }
 
-// --- stringInSlice tests ---
-
-func TestStringInSlice(t *testing.T) {
-	assert.True(t, stringInSlice("a", []string{"a", "b", "c"}))
-	assert.True(t, stringInSlice("c", []string{"a", "b", "c"}))
-	assert.False(t, stringInSlice("d", []string{"a", "b", "c"}))
-	assert.False(t, stringInSlice("a", []string{}))
-	assert.False(t, stringInSlice("", []string{}))
-	assert.True(t, stringInSlice("", []string{""}))
-}
-
 // --- JWK conversion tests ---
 
 func TestJWKToRSAPublicKey(t *testing.T) {
@@ -848,4 +837,138 @@ func TestSignJWT_Format(t *testing.T) {
 	for i, part := range parts {
 		assert.NotEmpty(t, part, "JWT part %d should not be empty", i)
 	}
+}
+
+// --- Identity claim allowlists ---
+
+// authenticateClaims signs claims with priv and runs them through auth.
+func authenticateClaims(t *testing.T, auth *Authenticator, claims ModalClaims, priv *rsa.PrivateKey) error {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/connect", nil)
+	req.Header.Set("Authorization", "Bearer "+signJWT(t, defaultHeader(), claims, priv))
+	return auth.Authenticate(req)
+}
+
+// Each identity claim allowlist must reject a signed token whose claim is
+// outside the list, so a gateway can admit one environment/app of a shared
+// workspace rather than every workload in it.
+func TestOIDCAuth_IdentityClaimAllowlists(t *testing.T) {
+	tests := []struct {
+		claim     string
+		configure func(cfg *OIDCConfig)
+		mutate    func(c *ModalClaims)
+	}{
+		{"environment_id", func(cfg *OIDCConfig) { cfg.AllowedEnvironmentIDs = []string{"env-def456"} }, func(c *ModalClaims) { c.EnvironmentID = "env-other" }},
+		{"environment_name", func(cfg *OIDCConfig) { cfg.AllowedEnvironmentNames = []string{"main"} }, func(c *ModalClaims) { c.EnvironmentName = "staging" }},
+		{"app_id", func(cfg *OIDCConfig) { cfg.AllowedAppIDs = []string{"app-ghi789"} }, func(c *ModalClaims) { c.AppID = "app-other" }},
+		{"app_name", func(cfg *OIDCConfig) { cfg.AllowedAppNames = []string{"my-app"} }, func(c *ModalClaims) { c.AppName = "other-app" }},
+		{"function_id", func(cfg *OIDCConfig) { cfg.AllowedFunctionIDs = []string{"fn-jkl012"} }, func(c *ModalClaims) { c.FunctionID = "fn-other" }},
+		{"function_name", func(cfg *OIDCConfig) { cfg.AllowedFunctionNames = []string{"my-func"} }, func(c *ModalClaims) { c.FunctionName = "other-func" }},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.claim, func(t *testing.T) {
+			auth, issuer, priv := buildOIDCAuthenticator(t, func(cfg *OIDCConfig) {
+				cfg.AllowedWorkspaceIDs = []string{"ws-abc123"}
+				tc.configure(cfg)
+			})
+
+			assert.NoError(t, authenticateClaims(t, auth, defaultClaims(issuer), priv))
+
+			claims := defaultClaims(issuer)
+			tc.mutate(&claims)
+			err := authenticateClaims(t, auth, claims, priv)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.claim)
+		})
+	}
+}
+
+// A token that omits a restricted claim must be rejected, not treated as a
+// wildcard: an empty claim value never matches a configured allowlist.
+func TestOIDCAuth_IdentityClaimAllowlist_MissingClaim(t *testing.T) {
+	auth, issuer, priv := buildOIDCAuthenticator(t, func(cfg *OIDCConfig) {
+		cfg.AllowedWorkspaceIDs = []string{"ws-abc123"}
+		cfg.AllowedAppNames = []string{"my-app"}
+	})
+
+	claims := defaultClaims(issuer)
+	claims.AppName = ""
+	err := authenticateClaims(t, auth, claims, priv)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_name")
+}
+
+// Allowlists combine with AND across claims and OR within a claim, so an
+// operator can admit several environments while still pinning one app.
+func TestOIDCAuth_IdentityClaimAllowlists_Combine(t *testing.T) {
+	auth, issuer, priv := buildOIDCAuthenticator(t, func(cfg *OIDCConfig) {
+		cfg.AllowedWorkspaceIDs = []string{"ws-abc123"}
+		cfg.AllowedEnvironmentNames = []string{"murmur-nonprod", "murmur-prod"}
+		cfg.AllowedAppNames = []string{"murmur-vms"}
+	})
+
+	for _, env := range []string{"murmur-nonprod", "murmur-prod"} {
+		claims := defaultClaims(issuer)
+		claims.EnvironmentName = env
+		claims.AppName = "murmur-vms"
+		assert.NoError(t, authenticateClaims(t, auth, claims, priv), env)
+	}
+
+	claims := defaultClaims(issuer)
+	claims.EnvironmentName = "murmur-prod"
+	claims.AppName = "other-app"
+	assert.ErrorContains(t, authenticateClaims(t, auth, claims, priv), "app_name")
+
+	claims = defaultClaims(issuer)
+	claims.EnvironmentName = "main"
+	claims.AppName = "murmur-vms"
+	assert.ErrorContains(t, authenticateClaims(t, auth, claims, priv), "environment_name")
+}
+
+// Names are only unique within a workspace, and any Modal user can obtain a
+// signed token for an environment, app, or function of any name in their own
+// workspace. A name allowlist without a workspace allowlist would therefore
+// admit strangers, so construction must fail rather than serve.
+func TestNewOIDCModalAuthenticator_NameAllowlistRequiresWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		claim string
+		cfg   OIDCConfig
+	}{
+		{"environment_name", OIDCConfig{AllowedEnvironmentNames: []string{"murmur-prod"}}},
+		{"app_name", OIDCConfig{AllowedAppNames: []string{"murmur-vms"}}},
+		{"function_name", OIDCConfig{AllowedFunctionNames: []string{"f"}}},
+	} {
+		t.Run(tc.claim, func(t *testing.T) {
+			tc.cfg.IssuerURL = "http://127.0.0.1:1"
+			_, err := NewOIDCModalAuthenticator(&tc.cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.claim)
+			assert.Contains(t, err.Error(), "workspace_id")
+		})
+	}
+}
+
+// ID allowlists are globally unique, so they stand on their own without a
+// workspace allowlist.
+func TestOIDCAuth_IDAllowlistWithoutWorkspace(t *testing.T) {
+	auth, issuer, priv := buildOIDCAuthenticator(t, func(cfg *OIDCConfig) {
+		cfg.AllowedEnvironmentIDs = []string{"env-def456"}
+		cfg.AllowedAppIDs = []string{"app-ghi789"}
+	})
+
+	assert.NoError(t, authenticateClaims(t, auth, defaultClaims(issuer), priv))
+}
+
+// An empty allowlist entry would match a signed token that omits the claim
+// entirely, silently disabling the restriction, so construction must fail.
+func TestNewOIDCModalAuthenticator_RejectsEmptyAllowlistEntry(t *testing.T) {
+	_, err := NewOIDCModalAuthenticator(&OIDCConfig{
+		IssuerURL:           "http://127.0.0.1:1",
+		AllowedWorkspaceIDs: []string{"ws-abc123"},
+		AllowedAppIDs:       []string{"app-ghi789", ""},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_id")
+	assert.Contains(t, err.Error(), "empty")
 }
