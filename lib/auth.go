@@ -63,27 +63,40 @@ type OIDCConfig struct {
 	AllowedFunctionNames []string
 }
 
-// validate rejects configurations whose allowlists can be satisfied by tokens
-// from workspaces the operator does not control. Any Modal user can create an
-// environment, app, or function with a given name in their own workspace and
-// obtain a validly signed token for it, so a name allowlist is only meaningful
-// when the workspace is pinned too.
+// claimRule pairs a token claim with its configured allowlist.
+type claimRule struct {
+	claim, value string
+	allowed      []string
+	// nameScoped marks claims that are only unique within a workspace.
+	nameScoped bool
+}
+
+func (c *OIDCConfig) claimRules(claims ModalClaims) []claimRule {
+	return []claimRule{
+		{"workspace_id", claims.WorkspaceID, c.AllowedWorkspaceIDs, false},
+		{"environment_id", claims.EnvironmentID, c.AllowedEnvironmentIDs, false},
+		{"environment_name", claims.EnvironmentName, c.AllowedEnvironmentNames, true},
+		{"app_id", claims.AppID, c.AllowedAppIDs, false},
+		{"app_name", claims.AppName, c.AllowedAppNames, true},
+		{"function_id", claims.FunctionID, c.AllowedFunctionIDs, false},
+		{"function_name", claims.FunctionName, c.AllowedFunctionNames, true},
+	}
+}
+
+// validate rejects allowlists that tokens the operator does not intend to
+// admit could satisfy. An empty entry would match a token that omits the
+// claim. A name allowlist without a workspace allowlist would match any
+// Modal user's environment, app, or function of that name in their own
+// workspace, for which they can obtain a validly signed token.
 func (c *OIDCConfig) validate() error {
 	if c.IssuerURL == "" {
 		return errors.New("OIDC issuer URL is required")
 	}
-	if len(c.AllowedWorkspaceIDs) > 0 {
-		return nil
-	}
-	for _, rule := range []struct {
-		claim   string
-		allowed []string
-	}{
-		{"environment_name", c.AllowedEnvironmentNames},
-		{"app_name", c.AllowedAppNames},
-		{"function_name", c.AllowedFunctionNames},
-	} {
-		if len(rule.allowed) > 0 {
+	for _, rule := range c.claimRules(ModalClaims{}) {
+		if slices.Contains(rule.allowed, "") {
+			return fmt.Errorf("the allowed %s list contains an empty value, which would admit tokens without that claim", rule.claim)
+		}
+		if rule.nameScoped && len(rule.allowed) > 0 && len(c.AllowedWorkspaceIDs) == 0 {
 			return fmt.Errorf("an allowed %s list requires an allowed workspace_id list, since names are only unique within a workspace", rule.claim)
 		}
 	}
@@ -93,18 +106,7 @@ func (c *OIDCConfig) validate() error {
 // authorize checks the token's identity claims against the configured
 // allowlists. The claims must already be signature-verified.
 func (c *OIDCConfig) authorize(claims ModalClaims) error {
-	for _, rule := range []struct {
-		claim, value string
-		allowed      []string
-	}{
-		{"workspace_id", claims.WorkspaceID, c.AllowedWorkspaceIDs},
-		{"environment_id", claims.EnvironmentID, c.AllowedEnvironmentIDs},
-		{"environment_name", claims.EnvironmentName, c.AllowedEnvironmentNames},
-		{"app_id", claims.AppID, c.AllowedAppIDs},
-		{"app_name", claims.AppName, c.AllowedAppNames},
-		{"function_id", claims.FunctionID, c.AllowedFunctionIDs},
-		{"function_name", claims.FunctionName, c.AllowedFunctionNames},
-	} {
+	for _, rule := range c.claimRules(claims) {
 		if len(rule.allowed) > 0 && !slices.Contains(rule.allowed, rule.value) {
 			return fmt.Errorf("%s %q is not in the allowed list", rule.claim, rule.value)
 		}

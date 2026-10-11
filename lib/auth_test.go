@@ -959,3 +959,16 @@ func TestOIDCAuth_IDAllowlistWithoutWorkspace(t *testing.T) {
 
 	assert.NoError(t, authenticateClaims(t, auth, defaultClaims(issuer), priv))
 }
+
+// An empty allowlist entry would match a signed token that omits the claim
+// entirely, silently disabling the restriction, so construction must fail.
+func TestNewOIDCModalAuthenticator_RejectsEmptyAllowlistEntry(t *testing.T) {
+	_, err := NewOIDCModalAuthenticator(&OIDCConfig{
+		IssuerURL:           "http://127.0.0.1:1",
+		AllowedWorkspaceIDs: []string{"ws-abc123"},
+		AllowedAppIDs:       []string{"app-ghi789", ""},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_id")
+	assert.Contains(t, err.Error(), "empty")
+}

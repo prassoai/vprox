@@ -1,12 +1,12 @@
 package lib
 
 import (
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"log"
 	"os"
 	"sync"
-	"time"
 )
 
 // ClientTLSConfig returns the TLS configuration a client uses for the control
@@ -39,15 +39,9 @@ func ServerTLSConfig(certPath, keyPath string) (*tls.Config, error) {
 type certReloader struct {
 	certPath, keyPath string
 
-	mu      sync.Mutex
-	version [2]fileVersion
-	cert    *tls.Certificate
-}
-
-// fileVersion identifies the contents of a file without reading it.
-type fileVersion struct {
-	modTime time.Time
-	size    int64
+	mu              sync.Mutex
+	certPEM, keyPEM []byte
+	cert            *tls.Certificate
 }
 
 func (r *certReloader) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -61,36 +55,31 @@ func (r *certReloader) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 	return cert, nil
 }
 
-// reload loads the certificate if either file changed since the last load. It
-// returns the current certificate, which is the previous one on error.
+// reload loads the certificate if either file's contents changed since the
+// last load. Contents rather than metadata are compared because renewal can
+// preserve modification times and sizes; the files are small and read only
+// on handshakes. It returns the current certificate, which is the previous
+// one on error.
 func (r *certReloader) reload() (*tls.Certificate, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	version, err := r.stat()
+	certPEM, err := os.ReadFile(r.certPath)
 	if err != nil {
-		return r.cert, err
+		return r.cert, fmt.Errorf("failed to read TLS certificate: %w", err)
 	}
-	if r.cert != nil && version == r.version {
+	keyPEM, err := os.ReadFile(r.keyPath)
+	if err != nil {
+		return r.cert, fmt.Errorf("failed to read TLS key: %w", err)
+	}
+	if r.cert != nil && bytes.Equal(certPEM, r.certPEM) && bytes.Equal(keyPEM, r.keyPEM) {
 		return r.cert, nil
 	}
-	cert, err := tls.LoadX509KeyPair(r.certPath, r.keyPath)
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return r.cert, fmt.Errorf("failed to load TLS certificate %s and key %s: %w", r.certPath, r.keyPath, err)
 	}
-	r.cert, r.version = &cert, version
+	r.cert, r.certPEM, r.keyPEM = &cert, certPEM, keyPEM
 	log.Printf("loaded TLS certificate for %v, valid until %v", cert.Leaf.DNSNames, cert.Leaf.NotAfter)
 	return r.cert, nil
-}
-
-func (r *certReloader) stat() ([2]fileVersion, error) {
-	var version [2]fileVersion
-	for i, path := range []string{r.certPath, r.keyPath} {
-		info, err := os.Stat(path)
-		if err != nil {
-			return version, fmt.Errorf("failed to stat TLS file: %w", err)
-		}
-		version[i] = fileVersion{info.ModTime(), info.Size()}
-	}
-	return version, nil
 }

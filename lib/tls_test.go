@@ -245,6 +245,25 @@ func TestServerTLSConfig_ServesAndReloadsRenewedCertificate(t *testing.T) {
 	assert.Equal(t, serialOf(t, renewedCert), servedSerial(t, gw, ca))
 }
 
+// Renewal can preserve file metadata, e.g. copying with preserved timestamps
+// over files whose renewed contents happen to be the same size. The gateway
+// must still notice the new contents rather than serve the old certificate
+// until it expires.
+func TestServerTLSConfig_ReloadsRenewalWithUnchangedMetadata(t *testing.T) {
+	ca, dir, now := newTestCA(t), t.TempDir(), time.Now()
+	certPEM, keyPEM := ca.issue(t, "vprox.test")
+	cfg, err := ServerTLSConfig(writeKeyPair(t, dir, certPEM, keyPEM, now))
+	require.NoError(t, err)
+	gw := startGateway(t, cfg)
+
+	renewedCert, renewedKey := ca.issue(t, "vprox.test")
+	for len(renewedCert) != len(certPEM) || len(renewedKey) != len(keyPEM) {
+		renewedCert, renewedKey = ca.issue(t, "vprox.test")
+	}
+	writeKeyPair(t, dir, renewedCert, renewedKey, now)
+	assert.Equal(t, serialOf(t, renewedCert), servedSerial(t, gw, ca))
+}
+
 // Renewal tools may replace the certificate before the key. While the files
 // hold a mismatched pair, the gateway keeps serving the last good certificate
 // instead of failing handshakes, and switches once the key catches up.
