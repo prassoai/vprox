@@ -16,6 +16,7 @@ import (
 
 	probing "github.com/prometheus-community/pro-bing"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -64,18 +65,24 @@ type Client struct {
 
 	// wgCidr is the current subnet assigned to the WireGuard interface, if any.
 	wgCidr netip.Prefix
+
+	// userspace is the wireguard-go device backing Ifname when the kernel has
+	// no WireGuard support, and nil when Ifname is a kernel interface.
+	userspace *userspaceDevice
 }
 
-// CreateInterface creates a new interface for wireguard. DeleteInterface() needs
-// to be called to clean this up.
+// CreateInterface creates a new interface for wireguard, falling back to
+// userspace WireGuard when the kernel does not support it. DeleteInterface()
+// needs to be called to clean this up.
 func (c *Client) CreateInterface() error {
-	link := c.link()
-
-	err := netlink.LinkAdd(link)
-	if err != nil {
-		return fmt.Errorf("error creating vprox interface: %v", err)
+	err := netlink.LinkAdd(c.link())
+	if errors.Is(err, unix.EOPNOTSUPP) {
+		log.Printf("kernel WireGuard is unavailable; using userspace WireGuard for %v", c.Ifname)
+		c.userspace, err = newUserspaceDevice(c.Ifname)
 	}
-
+	if err != nil {
+		return fmt.Errorf("error creating vprox interface: %w", err)
+	}
 	return nil
 }
 
@@ -253,14 +260,17 @@ func (c *Client) Disconnect() error {
 }
 
 func (c *Client) DeleteInterface() {
-	// Delete the WireGuard interface.
 	log.Printf("About to delete vprox interface %v", c.Ifname)
-	err := netlink.LinkDel(c.link())
-	if err != nil {
-		log.Printf("error deleting vprox interface %v: %v", c.Ifname, err)
-	} else {
-		log.Printf("successfully deleted vprox interface %v", c.Ifname)
+	if c.userspace != nil {
+		c.userspace.Close()
+		log.Printf("successfully deleted userspace vprox interface %v", c.Ifname)
+		return
 	}
+	if err := netlink.LinkDel(c.link()); err != nil {
+		log.Printf("error deleting vprox interface %v: %v", c.Ifname, err)
+		return
+	}
+	log.Printf("successfully deleted vprox interface %v", c.Ifname)
 }
 
 func (c *Client) link() *linkWireguard {
@@ -271,24 +281,36 @@ func (c *Client) link() *linkWireguard {
 // and returns true if it is healthy. This sends 3 pings in succession, and blocks
 // until they receive a response or the timeout passes.
 func (c *Client) CheckConnection(timeout time.Duration, cancelCtx context.Context) bool {
-	pinger, err := probing.NewPinger(c.wgCidr.Masked().Addr().Next().String())
-	if err != nil {
-		log.Printf("error creating pinger: %v", err)
-		return false
+	stats, err := c.ping(timeout, cancelCtx, false)
+	if errors.Is(err, unix.EACCES) {
+		// The kernel's default net.ipv4.ping_group_range ("1 0") forbids
+		// unprivileged ICMP sockets, and minimal VMs without a distribution's
+		// sysctl overrides keep it. A raw socket needs CAP_NET_RAW instead.
+		stats, err = c.ping(timeout, cancelCtx, true)
 	}
-
-	pinger.InterfaceName = c.Ifname
-	pinger.Timeout = timeout
-	pinger.Count = 3
-	pinger.Interval = 10 * time.Millisecond // Send approximately all at once
-	err = pinger.RunWithContext(cancelCtx)  // Blocks until finished.
 	if err != nil {
 		log.Printf("error running pinger: %v", err)
 		return false
 	}
-	stats := pinger.Statistics()
 	if stats.PacketsRecv > 0 && stats.PacketsRecv < stats.PacketsSent {
 		log.Printf("warning: %v of %v packets in ping were dropped", stats.PacketsSent-stats.PacketsRecv, stats.PacketsSent)
 	}
 	return stats.PacketsRecv > 0
+}
+
+// ping sends 3 pings to the gateway's tunnel address through the interface.
+func (c *Client) ping(timeout time.Duration, ctx context.Context, privileged bool) (*probing.Statistics, error) {
+	pinger, err := probing.NewPinger(c.wgCidr.Masked().Addr().Next().String())
+	if err != nil {
+		return nil, fmt.Errorf("creating pinger: %w", err)
+	}
+	pinger.SetPrivileged(privileged)
+	pinger.InterfaceName = c.Ifname
+	pinger.Timeout = timeout
+	pinger.Count = 3
+	pinger.Interval = 10 * time.Millisecond // Send approximately all at once
+	if err := pinger.RunWithContext(ctx); err != nil {
+		return nil, err
+	}
+	return pinger.Statistics(), nil
 }

@@ -93,11 +93,20 @@ type gateway struct {
 }
 
 func startGateway(t *testing.T, cfg *tls.Config) gateway {
+	return startGatewayResponding(t, cfg, connectResponse{AssignedAddr: "240.1.0.2/16", ServerListenPort: 50227})
+}
+
+// startGatewayResponding starts a gateway that answers every request with
+// resp and records the first bearer token it receives.
+func startGatewayResponding(t *testing.T, cfg *tls.Config, resp connectResponse) gateway {
 	t.Helper()
 	gw := gateway{tokens: make(chan string, 1)}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gw.tokens <- r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode(connectResponse{AssignedAddr: "240.1.0.2/16", ServerListenPort: 50227})
+		select {
+		case gw.tokens <- r.Header.Get("Authorization"):
+		default:
+		}
+		json.NewEncoder(w).Encode(resp)
 	}))
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
 	require.NoError(t, err)
