@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -88,12 +87,16 @@ var ConnectCmd = &cobra.Command{
 }
 
 var connectCmdArgs struct {
-	ifname string
+	ifname     string
+	serverName string
 }
 
 func init() {
 	ConnectCmd.Flags().StringVar(&connectCmdArgs.ifname, "interface",
 		"vprox0", "Interface name to proxy traffic through the VPN")
+	ConnectCmd.Flags().StringVar(&connectCmdArgs.serverName, "server-name",
+		"", "Hostname the server's TLS certificate must be valid for")
+	ConnectCmd.MarkFlagRequired("server-name")
 }
 
 func runConnect(cmd *cobra.Command, args []string) error {
@@ -126,7 +129,7 @@ func runConnect(cmd *cobra.Command, args []string) error {
 		Http: &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig: lib.ClientTLSConfig(connectCmdArgs.serverName),
 				DialContext:     dialWithRetry,
 			},
 		},

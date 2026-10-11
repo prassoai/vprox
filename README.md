@@ -84,16 +84,24 @@ Then apply with `sudo sysctl --system`.
 
 To set up `vprox`, you'll need the private IPv4 address of the server connected to an Internet gateway (use the `ip addr` command), as well as a block of IPs to allocate to the WireGuard subnet between server and client. This has no particular meaning and can be arbitrarily chosen to not overlap with other subnets.
 
+#### TLS
+
+The control connection carries the client's bearer token and the server's WireGuard public key, so clients always verify the server. The server needs a hostname that resolves to its public IP and a certificate for that hostname issued by a publicly trusted CA (for example, Let's Encrypt):
+
+- `vprox server --tls-cert <path> --tls-key <path>` serves the PEM certificate chain (leaf first, then intermediates) and private key. Both files are reloaded whenever they change, so renewing them in place takes effect without restarting the server.
+- `vprox connect <ip> --server-name <hostname>` dials the server by IPv4 address and verifies its certificate against `<hostname>`, using the system trust store.
+
 #### Password Authentication (default)
 
 The default authentication mode uses a shared password via the `VPROX_PASSWORD` environment variable:
 
 ```bash
 # [Machine A: public IP 1.2.3.4, private IP 172.31.64.125]
-VPROX_PASSWORD=my-password vprox server --ip 172.31.64.125 --wg-block 240.1.0.0/16
+VPROX_PASSWORD=my-password vprox server --ip 172.31.64.125 --wg-block 240.1.0.0/16 \
+  --tls-cert /etc/vprox/fullchain.pem --tls-key /etc/vprox/privkey.pem
 
 # [Machine B: public IP 5.6.7.8]
-VPROX_PASSWORD=my-password vprox connect 1.2.3.4 --interface vprox0
+VPROX_PASSWORD=my-password vprox connect 1.2.3.4 --server-name vpn.example.com --interface vprox0
 curl ifconfig.me                     # => 5.6.7.8
 curl --interface vprox0 ifconfig.me  # => 1.2.3.4
 ```
@@ -109,7 +117,8 @@ vprox supports OIDC token-based authentication, designed for use with [Modal's O
 VPROX_AUTH_MODE=oidc-modal \
 VPROX_OIDC_ISSUER=https://oidc.modal.com \
 VPROX_OIDC_ALLOWED_WORKSPACE_IDS=ws-abc123 \
-  vprox server --ip 172.31.64.125 --wg-block 240.1.0.0/16
+  vprox server --ip 172.31.64.125 --wg-block 240.1.0.0/16 \
+  --tls-cert /etc/vprox/fullchain.pem --tls-key /etc/vprox/privkey.pem
 ```
 
 **Client setup (inside a Modal container):**
@@ -118,7 +127,7 @@ VPROX_OIDC_ALLOWED_WORKSPACE_IDS=ws-abc123 \
 # Modal sets MODAL_IDENTITY_TOKEN automatically; pass it to vprox via VPROX_OIDC_TOKEN
 VPROX_AUTH_MODE=oidc-modal \
 VPROX_OIDC_TOKEN="$MODAL_IDENTITY_TOKEN" \
-  vprox connect 1.2.3.4 --interface vprox0
+  vprox connect 1.2.3.4 --server-name vpn.example.com --interface vprox0
 ```
 
 **OIDC environment variables:**
@@ -144,7 +153,8 @@ VPROX_AUTH_MODE=oidc-modal \
 VPROX_OIDC_ALLOWED_WORKSPACE_IDS=ws-abc123 \
 VPROX_OIDC_ALLOWED_ENVIRONMENT_NAMES=staging,prod \
 VPROX_OIDC_ALLOWED_APP_NAMES=my-gateway-app \
-  vprox server --ip 172.31.64.125 --wg-block 240.1.0.0/16
+  vprox server --ip 172.31.64.125 --wg-block 240.1.0.0/16 \
+  --tls-cert /etc/vprox/fullchain.pem --tls-key /etc/vprox/privkey.pem
 ```
 
 Environment, app and function names are only unique within a workspace, and any Modal user can mint a validly signed token for a name of their choosing in their own workspace. The server therefore refuses to start when a name allowlist is set without `VPROX_OIDC_ALLOWED_WORKSPACE_IDS`. Each of these variables also accepts `*` to explicitly allow all values (**testing only**).
@@ -178,7 +188,7 @@ On AWS in particular, the `--cloud aws` option allows you to automatically disco
 - Works if the server has multiple IPs, specified with `--wg-block-per-ip`
 - Automatic discovery of IPs using instance metadata endpoints (AWS)
 - Only one vprox server may be running on a host
-- Control traffic is encrypted with TLS (Warning: does not verify server certificate)
+- Control traffic is encrypted with TLS, and clients verify the server certificate against a configured hostname
 - Optimized for throughput with automatic MTU, MSS, GSO/GRO, and multi-queue configuration
 - Connection tracking bypass (NOTRACK) for reduced CPU overhead on WireGuard UDP flows
 - OIDC authentication for passwordless auth from Modal containers (`oidc-modal`)

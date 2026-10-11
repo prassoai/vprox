@@ -29,6 +29,8 @@ var serverCmdArgs struct {
 	wgBlockPerIp string
 	cloud        string
 	takeover     bool
+	tlsCert      string
+	tlsKey       string
 }
 
 func init() {
@@ -42,6 +44,12 @@ func init() {
 		"", "Cloud provider for IP metadata (watches for changes)")
 	ServerCmd.Flags().BoolVar(&serverCmdArgs.takeover, "takeover",
 		false, "Take over existing WireGuard state from a previous server instance (for non-disruptive upgrades)")
+	ServerCmd.Flags().StringVar(&serverCmdArgs.tlsCert, "tls-cert",
+		"", "PEM certificate chain presented to clients, reloaded when it changes")
+	ServerCmd.Flags().StringVar(&serverCmdArgs.tlsKey, "tls-key",
+		"", "PEM private key for --tls-cert, reloaded when it changes")
+	ServerCmd.MarkFlagRequired("tls-cert")
+	ServerCmd.MarkFlagRequired("tls-key")
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
@@ -98,9 +106,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	tlsConfig, err := lib.ServerTLSConfig(serverCmdArgs.tlsCert, serverCmdArgs.tlsKey)
+	if err != nil {
+		return err
+	}
+
 	ctx, done := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 
-	sm, err := lib.NewServerManager(wgBlock, wgBlockPerIp, ctx, key, auth, serverCmdArgs.takeover)
+	sm, err := lib.NewServerManager(wgBlock, wgBlockPerIp, ctx, key, auth, tlsConfig, serverCmdArgs.takeover)
 	if err != nil {
 		done()
 		return err
