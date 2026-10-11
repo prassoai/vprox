@@ -48,9 +48,9 @@ func getDefaultInterface() (netlink.Link, error) {
 //
 // All operations on an IpAllocator are thread-safe.
 type IpAllocator struct {
-	mu             sync.Mutex // Protects the fields below
-	prefix         netip.Prefix
-	allocated      map[netip.Addr]struct{}
+	mu        sync.Mutex // Protects the fields below
+	prefix    netip.Prefix
+	allocated map[netip.Addr]struct{}
 	// allocatedCount equals len(allocated); allows lock-free reads for monitoring.
 	allocatedCount atomic.Int64
 }
