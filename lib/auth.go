@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,9 +33,83 @@ type OIDCConfig struct {
 	// Audience is the expected "aud" claim in the token. If empty, audience is not checked.
 	Audience string
 
-	// AllowedWorkspaceIDs is a list of Modal workspace IDs that are allowed to authenticate.
-	// If empty, any workspace is allowed (only issuer/signature are checked).
+	// The Allowed* lists restrict which signed Modal identity claims may
+	// authenticate. Each non-empty list must contain the token's value for that
+	// claim; an empty list leaves the claim unchecked. All non-empty lists must
+	// match, so combining them narrows access (e.g. one environment AND one app).
+
+	// AllowedWorkspaceIDs restricts the "workspace_id" claim.
 	AllowedWorkspaceIDs []string
+
+	// AllowedEnvironmentIDs restricts the "environment_id" claim.
+	AllowedEnvironmentIDs []string
+
+	// AllowedEnvironmentNames restricts the "environment_name" claim. Names are
+	// only unique within a workspace, so this requires AllowedWorkspaceIDs.
+	AllowedEnvironmentNames []string
+
+	// AllowedAppIDs restricts the "app_id" claim.
+	AllowedAppIDs []string
+
+	// AllowedAppNames restricts the "app_name" claim. Names are only unique
+	// within a workspace, so this requires AllowedWorkspaceIDs.
+	AllowedAppNames []string
+
+	// AllowedFunctionIDs restricts the "function_id" claim.
+	AllowedFunctionIDs []string
+
+	// AllowedFunctionNames restricts the "function_name" claim. Names are only
+	// unique within a workspace, so this requires AllowedWorkspaceIDs.
+	AllowedFunctionNames []string
+}
+
+// validate rejects configurations whose allowlists can be satisfied by tokens
+// from workspaces the operator does not control. Any Modal user can create an
+// environment, app, or function with a given name in their own workspace and
+// obtain a validly signed token for it, so a name allowlist is only meaningful
+// when the workspace is pinned too.
+func (c *OIDCConfig) validate() error {
+	if c.IssuerURL == "" {
+		return errors.New("OIDC issuer URL is required")
+	}
+	if len(c.AllowedWorkspaceIDs) > 0 {
+		return nil
+	}
+	for _, rule := range []struct {
+		claim   string
+		allowed []string
+	}{
+		{"environment_name", c.AllowedEnvironmentNames},
+		{"app_name", c.AllowedAppNames},
+		{"function_name", c.AllowedFunctionNames},
+	} {
+		if len(rule.allowed) > 0 {
+			return fmt.Errorf("an allowed %s list requires an allowed workspace_id list, since names are only unique within a workspace", rule.claim)
+		}
+	}
+	return nil
+}
+
+// authorize checks the token's identity claims against the configured
+// allowlists. The claims must already be signature-verified.
+func (c *OIDCConfig) authorize(claims ModalClaims) error {
+	for _, rule := range []struct {
+		claim, value string
+		allowed      []string
+	}{
+		{"workspace_id", claims.WorkspaceID, c.AllowedWorkspaceIDs},
+		{"environment_id", claims.EnvironmentID, c.AllowedEnvironmentIDs},
+		{"environment_name", claims.EnvironmentName, c.AllowedEnvironmentNames},
+		{"app_id", claims.AppID, c.AllowedAppIDs},
+		{"app_name", claims.AppName, c.AllowedAppNames},
+		{"function_id", claims.FunctionID, c.AllowedFunctionIDs},
+		{"function_name", claims.FunctionName, c.AllowedFunctionNames},
+	} {
+		if len(rule.allowed) > 0 && !slices.Contains(rule.allowed, rule.value) {
+			return fmt.Errorf("%s %q is not in the allowed list", rule.claim, rule.value)
+		}
+	}
+	return nil
 }
 
 // Authenticator provides request authentication for the vprox server.
@@ -55,8 +130,8 @@ func NewPasswordAuthenticator(password string) *Authenticator {
 
 // NewOIDCModalAuthenticator creates an Authenticator that validates Modal OIDC tokens.
 func NewOIDCModalAuthenticator(config *OIDCConfig) (*Authenticator, error) {
-	if config.IssuerURL == "" {
-		return nil, errors.New("OIDC issuer URL is required")
+	if err := config.validate(); err != nil {
+		return nil, err
 	}
 	// Strip trailing slash for consistency.
 	config.IssuerURL = strings.TrimRight(config.IssuerURL, "/")
@@ -172,14 +247,7 @@ func (a *Authenticator) verifyOIDCToken(tokenStr string) error {
 		return fmt.Errorf("audience mismatch: got %q, expected %q", claims.Aud, a.oidc.Audience)
 	}
 
-	// Verify Modal workspace claim.
-	if len(a.oidc.AllowedWorkspaceIDs) > 0 {
-		if !stringInSlice(claims.WorkspaceID, a.oidc.AllowedWorkspaceIDs) {
-			return fmt.Errorf("workspace %q is not in the allowed list", claims.WorkspaceID)
-		}
-	}
-
-	return nil
+	return a.oidc.authorize(claims)
 }
 
 // ModalClaims represents the claims in a Modal OIDC identity token.
@@ -421,15 +489,4 @@ func verifyRS256Signature(pubKey *rsa.PublicKey, message, signature []byte) erro
 	// RS256 = RSASSA-PKCS1-v1_5 using SHA-256
 	h := sha256.Sum256(message)
 	return rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, h[:], signature)
-}
-
-// --- Utility ---
-
-func stringInSlice(s string, slice []string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }

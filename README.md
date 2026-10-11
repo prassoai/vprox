@@ -130,6 +130,24 @@ VPROX_OIDC_TOKEN="$MODAL_IDENTITY_TOKEN" \
 | `VPROX_OIDC_ISSUER` | OIDC issuer URL | `https://oidc.modal.com` |
 | `VPROX_OIDC_AUDIENCE` | Expected `aud` claim (skip check if empty) | _(empty)_ |
 | `VPROX_OIDC_ALLOWED_WORKSPACE_IDS` | Comma-separated list of allowed Modal workspace IDs. Set to `*` to explicitly allow all workspaces (**testing only**). | _(any)_ |
+| `VPROX_OIDC_ALLOWED_ENVIRONMENT_IDS` | Comma-separated list of allowed `environment_id` claims. | _(any)_ |
+| `VPROX_OIDC_ALLOWED_ENVIRONMENT_NAMES` | Comma-separated list of allowed `environment_name` claims. Requires `VPROX_OIDC_ALLOWED_WORKSPACE_IDS`. | _(any)_ |
+| `VPROX_OIDC_ALLOWED_APP_IDS` | Comma-separated list of allowed `app_id` claims. | _(any)_ |
+| `VPROX_OIDC_ALLOWED_APP_NAMES` | Comma-separated list of allowed `app_name` claims. Requires `VPROX_OIDC_ALLOWED_WORKSPACE_IDS`. | _(any)_ |
+| `VPROX_OIDC_ALLOWED_FUNCTION_IDS` | Comma-separated list of allowed `function_id` claims. | _(any)_ |
+| `VPROX_OIDC_ALLOWED_FUNCTION_NAMES` | Comma-separated list of allowed `function_name` claims. Requires `VPROX_OIDC_ALLOWED_WORKSPACE_IDS`. | _(any)_ |
+
+Each allowlist is checked against the corresponding claim of the signature-verified token. An unset list leaves that claim unchecked; a set list must contain the token's value (a token missing the claim is rejected). All set lists must match, so they narrow access together — for example, to one app in two environments of a shared workspace:
+
+```bash
+VPROX_AUTH_MODE=oidc-modal \
+VPROX_OIDC_ALLOWED_WORKSPACE_IDS=ws-abc123 \
+VPROX_OIDC_ALLOWED_ENVIRONMENT_NAMES=staging,prod \
+VPROX_OIDC_ALLOWED_APP_NAMES=my-gateway-app \
+  vprox server --ip 172.31.64.125 --wg-block 240.1.0.0/16
+```
+
+Environment, app and function names are only unique within a workspace, and any Modal user can mint a validly signed token for a name of their choosing in their own workspace. The server therefore refuses to start when a name allowlist is set without `VPROX_OIDC_ALLOWED_WORKSPACE_IDS`. Each of these variables also accepts `*` to explicitly allow all values (**testing only**).
 
 Note that Machine B must be able to send UDP packets to port 50227 on Machine A, and TCP to port 443.
 

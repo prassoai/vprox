@@ -49,13 +49,18 @@ func GetOIDCAudience() string {
 }
 
 // GetOIDCAllowedWorkspaceIDs returns the list of allowed Modal workspace IDs
-// from the VPROX_OIDC_ALLOWED_WORKSPACE_IDS environment variable (comma-separated).
-// If empty, any workspace is allowed. If set to "*", all workspaces are explicitly
-// allowed (returns nil) with a warning logged at startup.
+// from the VPROX_OIDC_ALLOWED_WORKSPACE_IDS environment variable.
 func GetOIDCAllowedWorkspaceIDs() []string {
-	raw := os.Getenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
+	return GetOIDCAllowlist("VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
+}
+
+// GetOIDCAllowlist returns the comma-separated allowlist in the named
+// environment variable. If empty, the claim is unchecked. If set to "*", all
+// values are explicitly allowed (returns nil) with a warning logged at startup.
+func GetOIDCAllowlist(envVar string) []string {
+	raw := os.Getenv(envVar)
 	if strings.TrimSpace(raw) == "*" {
-		log.Println("WARNING: VPROX_OIDC_ALLOWED_WORKSPACE_IDS is set to '*', allowing ALL workspaces. This should only be used for testing!")
+		log.Printf("WARNING: %s is set to '*', allowing ALL values. This should only be used for testing!", envVar)
 		return nil
 	}
 	return splitCSV(raw)
@@ -79,9 +84,15 @@ func GetAuthenticator() (*Authenticator, error) {
 	switch mode {
 	case AuthModeOIDCModal:
 		config := &OIDCConfig{
-			IssuerURL:           GetOIDCIssuerURL(),
-			Audience:            GetOIDCAudience(),
-			AllowedWorkspaceIDs: GetOIDCAllowedWorkspaceIDs(),
+			IssuerURL:               GetOIDCIssuerURL(),
+			Audience:                GetOIDCAudience(),
+			AllowedWorkspaceIDs:     GetOIDCAllowedWorkspaceIDs(),
+			AllowedEnvironmentIDs:   GetOIDCAllowlist("VPROX_OIDC_ALLOWED_ENVIRONMENT_IDS"),
+			AllowedEnvironmentNames: GetOIDCAllowlist("VPROX_OIDC_ALLOWED_ENVIRONMENT_NAMES"),
+			AllowedAppIDs:           GetOIDCAllowlist("VPROX_OIDC_ALLOWED_APP_IDS"),
+			AllowedAppNames:         GetOIDCAllowlist("VPROX_OIDC_ALLOWED_APP_NAMES"),
+			AllowedFunctionIDs:      GetOIDCAllowlist("VPROX_OIDC_ALLOWED_FUNCTION_IDS"),
+			AllowedFunctionNames:    GetOIDCAllowlist("VPROX_OIDC_ALLOWED_FUNCTION_NAMES"),
 		}
 		auth, err := NewOIDCModalAuthenticator(config)
 		if err != nil {

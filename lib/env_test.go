@@ -1,10 +1,12 @@
 package lib
 
 import (
+	"crypto/rsa"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetOIDCAllowedWorkspaceIDs_Wildcard(t *testing.T) {
@@ -117,4 +119,71 @@ func TestGetClientToken_OIDCModal_MissingToken(t *testing.T) {
 	_, err := GetClientToken()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "VPROX_OIDC_TOKEN")
+}
+
+// Every identity claim allowlist is read from its own environment variable and
+// threaded into the authenticator, so a misnamed or unwired variable would
+// silently leave the claim unchecked.
+func TestGetAuthenticator_IdentityClaimAllowlists(t *testing.T) {
+	priv := testKeyPair(t)
+	_, issuer := serveJWKS(t, map[string]*rsa.PublicKey{"test-key-1": &priv.PublicKey})
+
+	t.Setenv("VPROX_AUTH_MODE", "oidc-modal")
+	t.Setenv("VPROX_OIDC_ISSUER", issuer)
+	t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "ws-abc123")
+
+	for _, tc := range []struct {
+		envVar string
+		claim  string
+		mutate func(c *ModalClaims)
+	}{
+		{"VPROX_OIDC_ALLOWED_ENVIRONMENT_IDS", "environment_id", func(c *ModalClaims) { c.EnvironmentID = "env-other" }},
+		{"VPROX_OIDC_ALLOWED_ENVIRONMENT_NAMES", "environment_name", func(c *ModalClaims) { c.EnvironmentName = "other" }},
+		{"VPROX_OIDC_ALLOWED_APP_IDS", "app_id", func(c *ModalClaims) { c.AppID = "app-other" }},
+		{"VPROX_OIDC_ALLOWED_APP_NAMES", "app_name", func(c *ModalClaims) { c.AppName = "other" }},
+		{"VPROX_OIDC_ALLOWED_FUNCTION_IDS", "function_id", func(c *ModalClaims) { c.FunctionID = "fn-other" }},
+		{"VPROX_OIDC_ALLOWED_FUNCTION_NAMES", "function_name", func(c *ModalClaims) { c.FunctionName = "other" }},
+	} {
+		t.Run(tc.envVar, func(t *testing.T) {
+			claims := defaultClaims(issuer)
+			allowed := map[string]string{
+				"environment_id":   claims.EnvironmentID,
+				"environment_name": claims.EnvironmentName,
+				"app_id":           claims.AppID,
+				"app_name":         claims.AppName,
+				"function_id":      claims.FunctionID,
+				"function_name":    claims.FunctionName,
+			}[tc.claim]
+			t.Setenv(tc.envVar, "unrelated, "+allowed)
+
+			auth, err := GetAuthenticator()
+			require.NoError(t, err)
+			assert.NoError(t, authenticateClaims(t, auth, claims, priv))
+
+			tc.mutate(&claims)
+			assert.ErrorContains(t, authenticateClaims(t, auth, claims, priv), tc.claim)
+		})
+	}
+}
+
+// A name allowlist configured without a workspace allowlist must stop the
+// server at startup instead of admitting same-named workloads from any
+// workspace.
+func TestGetAuthenticator_NameAllowlistWithoutWorkspaceFails(t *testing.T) {
+	t.Setenv("VPROX_AUTH_MODE", "oidc-modal")
+	t.Setenv("VPROX_OIDC_ISSUER", "http://127.0.0.1:1")
+	t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "*")
+	t.Setenv("VPROX_OIDC_ALLOWED_APP_NAMES", "murmur-vms")
+
+	_, err := GetAuthenticator()
+	assert.ErrorContains(t, err, "workspace_id")
+}
+
+func TestGetOIDCAllowlist(t *testing.T) {
+	t.Setenv("VPROX_TEST_ALLOWLIST", " a, b ,,c ")
+	assert.Equal(t, []string{"a", "b", "c"}, GetOIDCAllowlist("VPROX_TEST_ALLOWLIST"))
+	t.Setenv("VPROX_TEST_ALLOWLIST", " * ")
+	assert.Nil(t, GetOIDCAllowlist("VPROX_TEST_ALLOWLIST"))
+	t.Setenv("VPROX_TEST_ALLOWLIST", "")
+	assert.Nil(t, GetOIDCAllowlist("VPROX_TEST_ALLOWLIST"))
 }
