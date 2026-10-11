@@ -173,6 +173,16 @@ CGO_ENABLED=0 go build
 
 This produces a static binary in `./vprox`.
 
+### Releases
+
+CI publishes every commit merged to `main`, once its checks pass, as a GitHub release tagged `sha-<full commit SHA>`. Each release contains static `vprox-linux-amd64` and `vprox-linux-arm64` binaries, built by CI from exactly that commit, plus a `SHA256SUMS` file. Releases are never marked latest. Pin an exact tag and verify the download before running it:
+
+```bash
+TAG=sha-<commit>
+gh release download "$TAG" --repo prassoai/vprox --pattern 'vprox-linux-amd64' --pattern SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
 ### Multiple private IPs
 
 On cloud providers like AWS, you can attach [secondary private IP addresses](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/MultipleIP.html) to an interface and associate each of them with a global IPv4 unicast address.
