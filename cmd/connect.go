@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -103,6 +104,10 @@ func runConnect(cmd *cobra.Command, args []string) error {
 	serverIp, err := netip.ParseAddr(args[0])
 	if err != nil || !serverIp.Is4() {
 		return fmt.Errorf("invalid IP address %s", args[0])
+	}
+	// Cobra only checks that the flag is present, not that it has a value.
+	if strings.TrimSpace(connectCmdArgs.serverName) == "" {
+		return errors.New("--server-name must be the hostname the server's TLS certificate is valid for")
 	}
 
 	key, err := lib.GetClientKey(connectCmdArgs.ifname)

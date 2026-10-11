@@ -89,7 +89,7 @@ To set up `vprox`, you'll need the private IPv4 address of the server connected 
 The control connection carries the client's bearer token and the server's WireGuard public key, so clients always verify the server. The server needs a hostname that resolves to its public IP and a certificate for that hostname issued by a publicly trusted CA (for example, Let's Encrypt):
 
 - `vprox server --tls-cert <path> --tls-key <path>` serves the PEM certificate chain (leaf first, then intermediates) and private key. Both files are reloaded whenever they change, so renewing them in place takes effect without restarting the server.
-- `vprox connect <ip> --server-name <hostname>` dials the server by IPv4 address and verifies its certificate against `<hostname>`, using the system trust store.
+- `vprox connect <ip> --server-name <hostname>` (required, non-empty) dials the server by IPv4 address and verifies its certificate against `<hostname>`, using the system trust store.
 
 #### Password Authentication (default)
 
@@ -157,7 +157,7 @@ VPROX_OIDC_ALLOWED_APP_NAMES=my-gateway-app \
   --tls-cert /etc/vprox/fullchain.pem --tls-key /etc/vprox/privkey.pem
 ```
 
-Environment, app and function names are only unique within a workspace, and any Modal user can mint a validly signed token for a name of their choosing in their own workspace. The server therefore refuses to start when a name allowlist is set without `VPROX_OIDC_ALLOWED_WORKSPACE_IDS`. Each of these variables also accepts `*` to explicitly allow all values (**testing only**).
+Environment, app and function names are only unique within a workspace, and any Modal user can mint a validly signed token for a name of their choosing in their own workspace. The server therefore refuses to start when a name allowlist is set without `VPROX_OIDC_ALLOWED_WORKSPACE_IDS`. Each of these variables also accepts `*` to explicitly allow all values (**testing only**). A variable that is set but contains no entries (for example `" , "`) is rejected at startup rather than treated as unset.
 
 Note that Machine B must be able to send UDP packets to port 50227 on Machine A, and TCP to port 443.
 

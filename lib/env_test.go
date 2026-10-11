@@ -11,31 +11,31 @@ import (
 
 func TestGetOIDCAllowedWorkspaceIDs_Wildcard(t *testing.T) {
 	t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "*")
-	result := GetOIDCAllowedWorkspaceIDs()
+	result := mustAllowlist(t, "VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
 	assert.Nil(t, result, "wildcard '*' should return nil (allow all)")
 }
 
 func TestGetOIDCAllowedWorkspaceIDs_WildcardWithWhitespace(t *testing.T) {
 	t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "  *  ")
-	result := GetOIDCAllowedWorkspaceIDs()
+	result := mustAllowlist(t, "VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
 	assert.Nil(t, result, "wildcard ' * ' with whitespace should return nil (allow all)")
 }
 
 func TestGetOIDCAllowedWorkspaceIDs_CommaSeparated(t *testing.T) {
 	t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "ws-abc,ws-def")
-	result := GetOIDCAllowedWorkspaceIDs()
+	result := mustAllowlist(t, "VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
 	assert.Equal(t, []string{"ws-abc", "ws-def"}, result)
 }
 
 func TestGetOIDCAllowedWorkspaceIDs_Empty(t *testing.T) {
 	t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "")
-	result := GetOIDCAllowedWorkspaceIDs()
+	result := mustAllowlist(t, "VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
 	assert.Nil(t, result, "empty string should return nil")
 }
 
 func TestGetOIDCAllowedWorkspaceIDs_Unset(t *testing.T) {
 	os.Unsetenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
-	result := GetOIDCAllowedWorkspaceIDs()
+	result := mustAllowlist(t, "VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
 	assert.Nil(t, result, "unset env should return nil")
 }
 
@@ -43,7 +43,7 @@ func TestGetOIDCAllowedWorkspaceIDs_WildcardIsNotSpecialInList(t *testing.T) {
 	// A "*" mixed with other values is NOT treated as a wildcard;
 	// it is treated as a literal workspace ID entry.
 	t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "ws-abc,*,ws-def")
-	result := GetOIDCAllowedWorkspaceIDs()
+	result := mustAllowlist(t, "VPROX_OIDC_ALLOWED_WORKSPACE_IDS")
 	assert.Equal(t, []string{"ws-abc", "*", "ws-def"}, result)
 }
 
@@ -179,11 +179,56 @@ func TestGetAuthenticator_NameAllowlistWithoutWorkspaceFails(t *testing.T) {
 	assert.ErrorContains(t, err, "workspace_id")
 }
 
+// mustAllowlist reads a well-formed allowlist variable.
+func mustAllowlist(t *testing.T, envVar string) []string {
+	t.Helper()
+	list, err := GetOIDCAllowlist(envVar)
+	require.NoError(t, err)
+	return list
+}
+
 func TestGetOIDCAllowlist(t *testing.T) {
 	t.Setenv("VPROX_TEST_ALLOWLIST", " a, b ,,c ")
-	assert.Equal(t, []string{"a", "b", "c"}, GetOIDCAllowlist("VPROX_TEST_ALLOWLIST"))
+	assert.Equal(t, []string{"a", "b", "c"}, mustAllowlist(t, "VPROX_TEST_ALLOWLIST"))
 	t.Setenv("VPROX_TEST_ALLOWLIST", " * ")
-	assert.Nil(t, GetOIDCAllowlist("VPROX_TEST_ALLOWLIST"))
+	assert.Nil(t, mustAllowlist(t, "VPROX_TEST_ALLOWLIST"))
 	t.Setenv("VPROX_TEST_ALLOWLIST", "")
-	assert.Nil(t, GetOIDCAllowlist("VPROX_TEST_ALLOWLIST"))
+	assert.Nil(t, mustAllowlist(t, "VPROX_TEST_ALLOWLIST"))
+}
+
+// A set allowlist that parses to no entries is a typo, not a request to leave
+// the claim unchecked; treating it as unchecked would silently admit every
+// workload the other restrictions allow.
+func TestGetOIDCAllowlist_RejectsSettingWithNoEntries(t *testing.T) {
+	for _, raw := range []string{" ", " , , ", ","} {
+		t.Setenv("VPROX_TEST_ALLOWLIST", raw)
+		_, err := GetOIDCAllowlist("VPROX_TEST_ALLOWLIST")
+		assert.ErrorContains(t, err, "VPROX_TEST_ALLOWLIST", "value %q", raw)
+	}
+}
+
+// Every OIDC allowlist variable, including the workspace list, must stop the
+// server at startup when it parses to no entries.
+func TestGetAuthenticator_RejectsAllowlistWithNoEntries(t *testing.T) {
+	for _, envVar := range []string{
+		"VPROX_OIDC_ALLOWED_WORKSPACE_IDS",
+		"VPROX_OIDC_ALLOWED_ENVIRONMENT_IDS",
+		"VPROX_OIDC_ALLOWED_ENVIRONMENT_NAMES",
+		"VPROX_OIDC_ALLOWED_APP_IDS",
+		"VPROX_OIDC_ALLOWED_APP_NAMES",
+		"VPROX_OIDC_ALLOWED_FUNCTION_IDS",
+		"VPROX_OIDC_ALLOWED_FUNCTION_NAMES",
+	} {
+		t.Run(envVar, func(t *testing.T) {
+			t.Setenv("VPROX_AUTH_MODE", "oidc-modal")
+			t.Setenv("VPROX_OIDC_ISSUER", "http://127.0.0.1:1")
+			t.Setenv("VPROX_OIDC_ALLOWED_WORKSPACE_IDS", "ws-abc123")
+			t.Setenv(envVar, " , , ")
+
+			_, err := GetAuthenticator()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), envVar)
+			assert.Contains(t, err.Error(), "no entries")
+		})
+	}
 }
